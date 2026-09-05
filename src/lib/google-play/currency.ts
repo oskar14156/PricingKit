@@ -19,6 +19,19 @@ export type GetTiersForCurrency = (
   currency: string
 ) => readonly RoundingTier[] | undefined;
 
+/**
+ * Platform-localized baseline price for a territory.
+ *
+ * For Apple Smart pricing this is the App Store Connect equalized customer
+ * price for the selected base price point. It already reflects Apple's FX,
+ * certain taxes, and local pricing conventions. Smart then adjusts willingness
+ * to pay relative to that Apple baseline.
+ */
+export interface RegionalPriceBaseline {
+  price: number;
+  currency: string;
+}
+
 // Dynamic exchange rates from API (passed to calculation functions)
 export interface DynamicExchangeRates {
   rates: Record<string, number>;
@@ -208,7 +221,8 @@ export function calculateRegionalPrice(
   dynamicExchangeRates?: DynamicExchangeRates, // Exchange rates from API
   baseCurrency: string = 'USD', // The currency of the basePrice
   baseRegion: string = 'US', // The region the basePrice is defined for
-  getTiersForCurrency?: GetTiersForCurrency // Optional tier ladder per currency (Apple)
+  getTiersForCurrency?: GetTiersForCurrency, // Optional tier ladder per currency (Apple)
+  regionalBaselines?: Record<string, RegionalPriceBaseline> // Apple equalized storefront baselines
 ): CalculatedPrice {
   // Convert to alpha-2 for lookups (handles both alpha-2 and alpha-3 inputs)
   const alpha2Code = toAlpha2(regionCode);
@@ -286,14 +300,35 @@ switch (strategy) {
       effectiveMultiplier = 1.0;
       multiplierSource = 'direct';
       break;
-case 'smart':
+case 'smart': {
   // App-market strategy: compressed PPP + platform/region priors.
   // Normalize relative to the selected base region, just like the other
   // indexes, so a non-US base country still behaves correctly.
   effectiveMultiplier = smartMultiplier / baseSmartMultiplier;
-  calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
+
+  // On Apple, prefer the price point that Apple itself equalizes from the
+  // selected base price point. Apple's equalization already accounts for
+  // storefront FX, certain taxes, and local pricing conventions. Applying
+  // Smart on top means a displayed 0.95× is genuinely ~5% below Apple's
+  // comparable local price instead of ~5% below a raw FX conversion.
+  const localizedBaseline =
+    regionalBaselines?.[regionCode] ?? regionalBaselines?.[alpha2Code];
+
+  if (
+    pricingPlatform === 'apple' &&
+    localizedBaseline &&
+    Number.isFinite(localizedBaseline.price) &&
+    localizedBaseline.price >= 0 &&
+    localizedBaseline.currency === currencyCode
+  ) {
+    calculatedPrice = localizedBaseline.price * effectiveMultiplier;
+  } else {
+    calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
+  }
+
   multiplierSource = 'app-market';
   break;
+}
 case 'ppp':
       // PPP strategy: adjust prices based on purchasing power parity
       //
@@ -446,7 +481,8 @@ export function calculateBulkPrices(
   dynamicExchangeRates?: DynamicExchangeRates, // Exchange rates from API
   baseCurrency: string = 'USD', // The currency of the basePrice
   baseRegion: string = 'US', // The region the basePrice is defined for
-  getTiersForCurrency?: GetTiersForCurrency // Optional tier ladder per currency (Apple)
+  getTiersForCurrency?: GetTiersForCurrency, // Optional tier ladder per currency (Apple)
+  regionalBaselines?: Record<string, RegionalPriceBaseline> // Apple equalized storefront baselines
 ): CalculatedPrice[] {
   return regionCodes.map((regionCode) => {
     const customMultiplier = customMultipliers?.[regionCode];
@@ -461,7 +497,8 @@ export function calculateBulkPrices(
       dynamicExchangeRates,
       baseCurrency,
       baseRegion,
-      getTiersForCurrency
+      getTiersForCurrency,
+      regionalBaselines
     );
   });
 }

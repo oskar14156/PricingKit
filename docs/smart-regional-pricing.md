@@ -87,3 +87,58 @@ price matters more than perfect pricing across dozens of low-volume storefronts.
   https://www.retention.blog/p/global-pricing-guidance
 - Apple, auto-renewable subscription pricing:
   https://developer.apple.com/app-store/subscriptions/
+
+## Apple storefront baseline (V2)
+
+For Apple, Smart pricing does **not** start from a raw foreign-exchange
+conversion. PricingKit resolves the selected base price to an actual App Store
+Connect price point and calls Apple's price-point `equalizations` endpoint.
+
+The returned customer prices are Apple's comparable storefront prices and
+already reflect Apple's localization machinery: exchange rates, certain taxes,
+and local pricing conventions. Smart then applies its app-market multiplier to
+that local baseline and snaps the result to a valid Apple price point.
+
+Conceptually:
+
+```text
+selected Apple base price point
+        ↓
+Apple equalized storefront customer price
+        ↓
+Smart app-market multiplier
+        ↓
+nearest valid Apple price point
+```
+
+That means a displayed `0.95×` in Austria is approximately 5% below Apple's
+equalized Austrian baseline; it is no longer 5% below a raw USD→EUR conversion.
+
+If Apple's equalizations cannot be loaded, the Apple Smart preview is paused
+rather than silently falling back to the old raw-FX behavior. Google Play keeps
+the existing Smart calculation path.
+
+Smart remains a starting prior, not a proof of the revenue-maximizing price.
+Country/platform RPU or LTV experiments should supersede the prior once enough
+first-party data exists.
+
+## V3 revenue-tuned calibration
+
+V3 keeps the V2 Apple equalized-storefront baseline and changes only the
+no-first-party-data prior.
+
+The main calibration changes are:
+
+- Western Europe is kept closer to North American pricing (roughly 0.90–1.00x
+  for most markets rather than allowing an 0.85x floor).
+- Japan and South Korea move upward into a roughly 0.85–0.95x band.
+- Singapore and Hong Kong move upward into a roughly 0.90–1.00x band.
+- UAE, Qatar, Kuwait, Bahrain, Saudi Arabia, and Oman are removed from the
+  generic MEA curve and receive a dedicated high-income Gulf prior.
+- Emerging Asia, Latin America, and genuinely lower-income MEA markets retain
+  the V2 behavior.
+
+The purpose is not to maximize conversion rate. The prior is intentionally
+biased toward maximizing revenue / payer LTV for digital apps with negligible
+marginal cost. It should still be replaced by country/platform RPU or LTV
+experiments as soon as first-party data is statistically useful.

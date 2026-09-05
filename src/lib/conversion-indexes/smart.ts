@@ -8,9 +8,11 @@
  * subset of the population than the average consumer measured by PPP.
  *
  * The model therefore compresses World Bank PPP and applies broad mobile-app
- * market priors. It is a starting prior for markets without enough first-party
- * experiment data; once an app has sufficient volume, country-level RPU/LTV
- * experiments should supersede this model.
+ * market priors. V3 is intentionally revenue-tuned: mature Western markets,
+ * developed East Asia, high-income Asian storefronts, and wealthy Gulf states
+ * are kept closer to top-market pricing. It remains a starting prior for
+ * markets without enough first-party experiment data; once an app has
+ * sufficient volume, country-level RPU/LTV experiments should supersede it.
  *
  * Calibration references (reviewed 2026-09):
  * - RevenueCat, State of Subscription Apps 2026
@@ -30,8 +32,14 @@ const WESTERN_EUROPE = new Set([
   'DK', 'IE', 'PT', 'LU', 'LI', 'IS', 'MC', 'MT',
 ]);
 
-const DEVELOPED_ASIA_PACIFIC = new Set(['JP', 'KR', 'AU', 'NZ']);
+const DEVELOPED_EAST_ASIA = new Set(['JP', 'KR']);
+const OCEANIA = new Set(['AU', 'NZ']);
 const HIGH_INCOME_ASIA = new Set(['SG', 'HK']);
+
+// Wealthy Gulf storefronts should not inherit the same deep-discount curve as
+// lower-income MEA markets. Their paying iOS audience is much closer to
+// top-market willingness-to-pay.
+const HIGH_INCOME_GULF = new Set(['AE', 'QA', 'KW', 'BH', 'SA', 'OM']);
 
 // RevenueCat's IN/SEA cohort plus nearby lower/middle-income Asian markets that
 // show similar app-affordability dynamics. Singapore is handled separately.
@@ -45,8 +53,8 @@ const LATIN_AMERICA = new Set([
 ]);
 
 const MIDDLE_EAST_AFRICA = new Set([
-  'SA', 'ZA', 'AE', 'EG', 'NG', 'KE', 'TR', 'QA', 'KW', 'BH', 'OM', 'JO',
-  'MA', 'TN', 'DZ', 'GH', 'TZ', 'UG', 'ET', 'CM', 'SN', 'CI',
+  'ZA', 'EG', 'NG', 'KE', 'TR', 'JO', 'MA', 'TN', 'DZ', 'GH', 'TZ', 'UG',
+  'ET', 'CM', 'SN', 'CI',
 ]);
 
 function clamp(value: number, min: number, max: number): number {
@@ -103,20 +111,31 @@ export function getSmartPricingMultiplier(
   if (code === 'CA') {
     multiplier = 1;
   } else if (WESTERN_EUROPE.has(code)) {
-    // RevenueCat 2026: Western Europe annual median is almost identical to NA.
-    // Keep meaningful differences (e.g. ES/PT vs CH/Nordics) but heavily
-    // compress population-wide PPP so rich app users are not underpriced.
+    // RevenueCat 2026: Western Europe subscription pricing is near NA. V3
+    // therefore compresses PPP more aggressively and raises the floor so
+    // countries such as ES/PT are not discounted like emerging markets.
     multiplier = clamp(
-      Math.pow(ppp, 0.375),
-      0.85,
+      Math.pow(ppp, 0.25),
+      0.90,
       platform === 'apple' ? 1.08 : 1.05
     );
-  } else if (DEVELOPED_ASIA_PACIFIC.has(code)) {
-    // Large-app basket: AU ~80-90% of US; RevenueCat shows APAC as a high-value
-    // region. A narrow 0.80-0.95 band is a safer default than raw PPP.
+  } else if (DEVELOPED_EAST_ASIA.has(code)) {
+    // Japan and Korea have high-value paid-app audiences. V3 moves them closer
+    // to top-market pricing while retaining a modest regional discount.
+    multiplier = clamp(Math.pow(ppp, 0.30), 0.85, 0.95);
+  } else if (OCEANIA.has(code)) {
+    // Australia / New Zealand were already close to the desired revenue prior.
     multiplier = clamp(Math.pow(ppp, 0.45), 0.80, 0.95);
   } else if (HIGH_INCOME_ASIA.has(code)) {
-    multiplier = clamp(Math.pow(ppp, 0.40), 0.85, 1.00);
+    // Singapore / Hong Kong should sit materially above broad SEA pricing.
+    multiplier = clamp(Math.pow(ppp, 0.25), 0.90, 1.00);
+  } else if (HIGH_INCOME_GULF.has(code)) {
+    // Wealthy Gulf states get their own curve instead of the deep-discount MEA
+    // bucket. Apple is intentionally stronger because the iOS payer mix is
+    // especially affluent; Google retains a modest platform discount.
+    multiplier = platform === 'apple'
+      ? clamp(Math.pow(ppp, 0.15), 0.88, 1.00)
+      : clamp(Math.pow(ppp, 0.20), 0.82, 0.95);
   } else if (EMERGING_ASIA.has(code)) {
     if (platform === 'apple') {
       // RevenueCat: IN/SEA prices ~46-54% of top markets; iOS payer value is

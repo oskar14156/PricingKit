@@ -43,6 +43,7 @@ import { getSupportedAppleTerritories, getTerritoryByAlpha3, alpha2ToAlpha3 } fr
 import { findClosestTierForCurrency, getPriceTiersForCurrency } from '@/lib/apple-connect/price-tier-data';
 import { getCurrencySymbol as sharedGetCurrencySymbol } from '@/lib/utils/currency';
 import { useAppleAppPrice } from '@/hooks/use-apple-app-price';
+import { useAppleEqualizedPrices } from '@/hooks/use-apple-equalized-prices';
 import {
   Select,
   SelectContent,
@@ -58,6 +59,7 @@ import {
   type RoundingMode,
   type DynamicPPPData,
   type DynamicExchangeRates,
+  type RegionalPriceBaseline,
 } from '@/lib/google-play/currency';
 import { useUpdateProductPrices } from '@/hooks/use-products';
 
@@ -239,6 +241,47 @@ export function BulkPricingModal({
 
   const basePriceNum = parseFloat(basePrice) || 0;
 
+  const {
+    data: equalizedPriceData,
+    isLoading: equalizedPricesLoading,
+    error: equalizedPricesError,
+  } = useAppleEqualizedPrices({
+    kind: 'product',
+    id: product.sku,
+    baseRegion,
+    basePrice: basePriceNum,
+    enabled: open && platform === 'apple' && strategy === 'smart',
+  });
+
+  const smartRegionalBaselines = useMemo(() => {
+    if (!equalizedPriceData) return undefined;
+
+    const baselines: Record<string, RegionalPriceBaseline> = {};
+    for (const [regionCode, price] of Object.entries(equalizedPriceData.prices)) {
+      const numericPrice = Number(price.customerPrice);
+      if (Number.isFinite(numericPrice)) {
+        baselines[regionCode] = {
+          price: numericPrice,
+          currency: price.currency,
+        };
+      }
+    }
+    return baselines;
+  }, [equalizedPriceData]);
+
+  useEffect(() => {
+    if (
+      open &&
+      platform === 'apple' &&
+      strategy === 'smart' &&
+      equalizedPricesError
+    ) {
+      toast.error(
+        `Apple equalized prices could not be loaded: ${equalizedPricesError.message}`
+      );
+    }
+  }, [open, platform, strategy, equalizedPricesError]);
+
   // Normalize prices to Money format (handles both Google and Apple)
   // Must be calculated before allRegions so we can include territories with existing pricing
   const normalizedPrices = useMemo(() => {
@@ -360,19 +403,34 @@ export function BulkPricingModal({
   // This ensures we use the correct currency that the platform expects for each region
   const actualCurrencies = useMemo(() => {
     const currencies: Record<string, string> = {};
-    if (normalizedPrices) {
-      for (const [regionCode, money] of Object.entries(normalizedPrices)) {
-        if (money.currencyCode) {
-          currencies[regionCode] = money.currencyCode;
-        }
+
+    // allRegions carries the platform-authoritative storefront currency even
+    // when the product doesn't already have a configured price in that region.
+    for (const region of allRegions) {
+      currencies[region.code] = region.currency;
+    }
+
+    // Existing API prices remain the strongest source when present.
+    for (const [regionCode, money] of Object.entries(normalizedPrices)) {
+      if (money.currencyCode) {
+        currencies[regionCode] = money.currencyCode;
       }
     }
+
     return currencies;
-  }, [normalizedPrices]);
+  }, [allRegions, normalizedPrices]);
 
   // Calculate preview prices using the user-selected base region + currency.
   const previewPrices = useMemo(() => {
     if (basePriceNum < 0) return [];
+
+    if (
+      platform === 'apple' &&
+      strategy === 'smart' &&
+      !smartRegionalBaselines
+    ) {
+      return [];
+    }
 
     const calculatedPrices = calculateBulkPrices(
       basePriceNum,
@@ -385,7 +443,8 @@ export function BulkPricingModal({
       exchangeRates ?? undefined, // Dynamic exchange rates from API
       baseCurrency,
       baseRegion,
-      platform === 'apple' ? getPriceTiersForCurrency : undefined
+      platform === 'apple' ? getPriceTiersForCurrency : undefined,
+      platform === 'apple' ? smartRegionalBaselines : undefined
     );
 
     // For Apple, match each calculated price to the closest available tier
@@ -405,7 +464,7 @@ export function BulkPricingModal({
     }) : calculatedPrices;
 
     return finalPrices;
-  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, platform, baseCurrency, baseRegion]);
+  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, platform, baseCurrency, baseRegion, smartRegionalBaselines]);
 
   // Get current price for a region
   const getCurrentPrice = useCallback((regionCode: string): Money | null => {
@@ -826,7 +885,7 @@ export function BulkPricingModal({
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <Label>Pricing Strategy</Label>
-              {(pppLoading || exchangeRatesLoading) && (
+              {(pppLoading || exchangeRatesLoading || (platform === 'apple' && strategy === 'smart' && equalizedPricesLoading)) && (
                 <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
               )}
             </div>

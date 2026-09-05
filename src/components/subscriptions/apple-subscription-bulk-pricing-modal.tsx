@@ -39,6 +39,7 @@ import {
   alpha3ToAlpha2,
 } from '@/lib/apple-connect/territories';
 import { useAppleAppPrice } from '@/hooks/use-apple-app-price';
+import { useAppleEqualizedPrices } from '@/hooks/use-apple-equalized-prices';
 import { findClosestTierForCurrency, getPriceTiersForCurrency } from '@/lib/apple-connect/price-tier-data';
 import { getCurrencySymbol } from '@/lib/utils/currency';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -58,6 +59,7 @@ import {
   type RoundingMode,
   type DynamicPPPData,
   type DynamicExchangeRates,
+  type RegionalPriceBaseline,
 } from '@/lib/google-play/currency';
 import { useUpdateAppleSubscriptionPrices, useResolveAppleSubscriptionPricePoints } from '@/hooks/use-subscriptions';
 
@@ -190,6 +192,42 @@ export function AppleSubscriptionBulkPricingModal({
 
   const basePriceNum = parseFloat(basePrice) || 0;
   const isApproved = subscription.state === 'APPROVED';
+
+  const {
+    data: equalizedPriceData,
+    isLoading: equalizedPricesLoading,
+    error: equalizedPricesError,
+  } = useAppleEqualizedPrices({
+    kind: 'subscription',
+    id: subscription.id,
+    baseRegion,
+    basePrice: basePriceNum,
+    enabled: open && strategy === 'smart',
+  });
+
+  const smartRegionalBaselines = useMemo(() => {
+    if (!equalizedPriceData) return undefined;
+
+    const baselines: Record<string, RegionalPriceBaseline> = {};
+    for (const [regionCode, price] of Object.entries(equalizedPriceData.prices)) {
+      const numericPrice = Number(price.customerPrice);
+      if (Number.isFinite(numericPrice)) {
+        baselines[regionCode] = {
+          price: numericPrice,
+          currency: price.currency,
+        };
+      }
+    }
+    return baselines;
+  }, [equalizedPriceData]);
+
+  useEffect(() => {
+    if (open && strategy === 'smart' && equalizedPricesError) {
+      toast.error(
+        `Apple equalized prices could not be loaded: ${equalizedPricesError.message}`
+      );
+    }
+  }, [open, strategy, equalizedPricesError]);
 
   // Seed base region from app-level Apple base territory once it loads,
   // unless the user has already picked a region this session.
@@ -330,6 +368,10 @@ export function AppleSubscriptionBulkPricingModal({
   const previewPrices = useMemo((): PreviewPrice[] => {
     if (basePriceNum <= 0) return [];
 
+    // Smart Apple pricing must never silently fall back to raw FX while Apple's
+    // equalized storefront baselines are still loading or unavailable.
+    if (strategy === 'smart' && !smartRegionalBaselines) return [];
+
     // Base region is user-controlled state (seeded from app-level Apple base territory).
     // calculateBulkPrices accepts baseRegion as alpha-2 OR alpha-3; for Apple we pass alpha-3.
     const calculatedPrices = calculateBulkPrices(
@@ -343,7 +385,8 @@ export function AppleSubscriptionBulkPricingModal({
       exchangeRates ?? undefined,
       baseCurrency,
       baseRegion,
-      getPriceTiersForCurrency // tier-aware rounding for Apple
+      getPriceTiersForCurrency, // tier-aware rounding for Apple
+      smartRegionalBaselines
     );
 
     // Map to preview format with Apple tier matching
@@ -384,7 +427,7 @@ export function AppleSubscriptionBulkPricingModal({
         multiplierSource: calculated.multiplierSource,
       };
     });
-  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, subscription.prices, baseRegion, baseCurrency]);
+  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, subscription.prices, baseRegion, baseCurrency, smartRegionalBaselines]);
 
   const sortedPreviewPrices = useMemo(() => {
     const items = [...previewPrices];
@@ -810,7 +853,7 @@ export function AppleSubscriptionBulkPricingModal({
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <Label>Pricing Strategy</Label>
-                {(pppLoading || exchangeRatesLoading) && (
+                {(pppLoading || exchangeRatesLoading || (strategy === 'smart' && equalizedPricesLoading)) && (
                   <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />
                 )}
               </div>

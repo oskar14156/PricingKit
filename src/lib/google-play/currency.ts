@@ -7,6 +7,7 @@ import { getNetflixMultiplier } from '../conversion-indexes/netflix';
 import { FALLBACK_EXCHANGE_RATES } from '../conversion-indexes/exchange-rates';
 import { getSmartPricingMultiplier, type PricingPlatform } from '../conversion-indexes/smart';
 import { alpha3ToAlpha2 } from '../apple-connect/territories';
+import { findPreferredTierIndex } from '../apple-connect/price-tier-selection';
 
 export type PricingStrategy = 'direct' | 'smart' | 'ppp' | 'bigmac' | 'netflix' | 'custom';
 export type RoundingMode = 'nearest-tier' | 'nearest-99' | 'round-up' | 'none';
@@ -128,16 +129,15 @@ function applyRounding(
   // when no tier list is supplied (e.g. Google).
   if (mode === 'nearest-tier') {
     if (tiers && tiers.length > 0) {
-      let closest = tiers[0];
-      let minDiff = Math.abs(closest.price - price);
-      for (let i = 1; i < tiers.length; i++) {
-        const diff = Math.abs(tiers[i].price - price);
-        if (diff < minDiff) {
-          minDiff = diff;
-          closest = tiers[i];
-        }
+      const preferredIndex = findPreferredTierIndex(
+        tiers.map((tier) => tier.price),
+        price,
+        currencyCode
+      );
+
+      if (preferredIndex !== null) {
+        return tiers[preferredIndex].price;
       }
-      return closest.price;
     }
     // Fall through: behave as nearest-99 when no tier list available.
   }

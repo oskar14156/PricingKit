@@ -42,6 +42,7 @@ import { useAppleAppPrice } from '@/hooks/use-apple-app-price';
 import { useAppleEqualizedPrices } from '@/hooks/use-apple-equalized-prices';
 import { useAppleSmallBusinessProgram } from '@/hooks/use-apple-small-business-program';
 import { findClosestTierForCurrency, getPriceTiersForCurrency } from '@/lib/apple-connect/price-tier-data';
+import { findSmartTierForCurrency } from '@/lib/apple-connect/price-tier-selection';
 import { getCurrencySymbol } from '@/lib/utils/currency';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
@@ -406,7 +407,7 @@ export function AppleSubscriptionBulkPricingModal({
       const currency = calculated.currencyCode;
 
       // Find closest Apple tier for this price/currency
-      const closestTier = findClosestTierForCurrency(calculated.rawPrice, currency);
+      const closestTier = findSmartTierForCurrency(calculated.rawPrice, currency);
 
       const tierPrice = closestTier?.price ?? calculated.rawPrice;
       const tier = closestTier?.tier ?? null;

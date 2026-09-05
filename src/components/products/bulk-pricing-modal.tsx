@@ -40,7 +40,8 @@ import {
   parseMoney,
 } from '@/lib/google-play/types';
 import { getSupportedAppleTerritories, getTerritoryByAlpha3, alpha2ToAlpha3 } from '@/lib/apple-connect/territories';
-import { findClosestTierForCurrency, getPriceTiersForCurrency } from '@/lib/apple-connect/price-tier-data';
+import { getPriceTiersForCurrency } from '@/lib/apple-connect/price-tier-data';
+import { findSmartTierForCurrency } from '@/lib/apple-connect/price-tier-selection';
 import { getCurrencySymbol as sharedGetCurrencySymbol } from '@/lib/utils/currency';
 import { useAppleAppPrice } from '@/hooks/use-apple-app-price';
 import { useAppleEqualizedPrices } from '@/hooks/use-apple-equalized-prices';
@@ -455,7 +456,7 @@ export function BulkPricingModal({
 
     // For Apple, match each calculated price to the closest available tier
     const finalPrices = platform === 'apple' ? calculatedPrices.map(calculated => {
-      const closestTier = findClosestTierForCurrency(calculated.rawPrice, calculated.currencyCode);
+      const closestTier = findSmartTierForCurrency(calculated.rawPrice, calculated.currencyCode);
       if (closestTier) {
         return {
           ...calculated,

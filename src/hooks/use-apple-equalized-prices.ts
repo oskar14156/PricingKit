@@ -4,6 +4,8 @@ export interface AppleEqualizedPrice {
   customerPrice: string;
   currency: string;
   pricePointId: string;
+  proceeds?: string;
+  proceedsYear2?: string;
 }
 
 export interface AppleEqualizedPricesResponse {

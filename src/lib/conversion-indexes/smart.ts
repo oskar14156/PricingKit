@@ -36,6 +36,84 @@ const DEVELOPED_EAST_ASIA = new Set(['JP', 'KR']);
 const OCEANIA = new Set(['AU', 'NZ']);
 const HIGH_INCOME_ASIA = new Set(['SG', 'HK']);
 
+// High-income Asian storefronts that empirically belong below SG/HK but well
+// above broad emerging-Asia pricing.
+const SECONDARY_HIGH_INCOME_ASIA: Record<string, number> = {
+  TW: 0.84,
+  MO: 0.83,
+  BN: 0.84,
+};
+
+// Central/Eastern Europe benefits from an explicit iOS prior rather than
+// falling through generic PPP. These values intentionally sit between
+// Western-Europe parity and emerging-market pricing.
+const CEE_APPLE_PRIORS: Record<string, number> = {
+  BG: 0.68,
+  RO: 0.70,
+  PL: 0.75,
+  HU: 0.76,
+  HR: 0.76,
+  SK: 0.78,
+  CZ: 0.80,
+  LV: 0.78,
+  LT: 0.78,
+  EE: 0.84,
+  SI: 0.82,
+  GR: 0.79,
+  CY: 0.83,
+};
+
+// High-income Latin American markets should not inherit the broad LATAM curve.
+const HIGH_INCOME_LATAM_APPLE_PRIORS: Record<string, number> = {
+  CL: 0.75,
+  CR: 0.75,
+  PA: 0.75,
+  UY: 0.78,
+  GY: 0.75,
+  TT: 0.80,
+};
+
+// Sparse-market corrections discovered in the full 175-territory audit.
+// These are deliberately iOS-oriented: paid iPhone users are wealthier than
+// population averages, so very poor markets still keep a meaningful floor.
+const SPARSE_APPLE_PRIORS: Record<string, number> = {
+  AF: 0.45,
+  BF: 0.45,
+  TD: 0.45,
+  CD: 0.45,
+  GM: 0.45,
+  GW: 0.45,
+  MG: 0.45,
+  MW: 0.45,
+  ML: 0.45,
+  MZ: 0.45,
+  NE: 0.45,
+  RW: 0.45,
+  UG: 0.45,
+  YE: 0.45,
+  SO: 0.45,
+
+  AO: 0.55,
+  BJ: 0.55,
+  BT: 0.55,
+  CG: 0.55,
+  SZ: 0.55,
+  LB: 0.55,
+  MR: 0.55,
+  NA: 0.55,
+  PG: 0.55,
+  SB: 0.55,
+  ST: 0.55,
+  VU: 0.55,
+  ZM: 0.55,
+
+  FM: 0.72,
+  TO: 0.72,
+  NR: 0.80,
+  PW: 0.80,
+  SC: 0.80,
+};
+
 // Wealthy Gulf storefronts should not inherit the same deep-discount curve as
 // lower-income MEA markets. Their paying iOS audience is much closer to
 // top-market willingness-to-pay.
@@ -48,7 +126,7 @@ const EMERGING_ASIA = new Set([
 ]);
 
 const LATIN_AMERICA = new Set([
-  'BR', 'MX', 'AR', 'CL', 'CO', 'PE', 'UY', 'EC', 'BO', 'PY', 'CR', 'PA',
+  'BR', 'MX', 'AR', 'CO', 'PE', 'EC', 'BO', 'PY',
   'DO', 'GT', 'HN', 'SV', 'NI',
 ]);
 
@@ -110,6 +188,26 @@ export function getSmartPricingMultiplier(
   // Basket-of-app evidence puts Canada approximately at US parity.
   if (code === 'CA') {
     multiplier = 1;
+  } else if (CEE_APPLE_PRIORS[code] !== undefined) {
+    const applePrior = CEE_APPLE_PRIORS[code];
+    multiplier = platform === 'apple'
+      ? applePrior
+      : clamp(applePrior * 0.90, 0.58, 0.78);
+  } else if (SECONDARY_HIGH_INCOME_ASIA[code] !== undefined) {
+    const applePrior = SECONDARY_HIGH_INCOME_ASIA[code];
+    multiplier = platform === 'apple'
+      ? applePrior
+      : clamp(applePrior * 0.92, 0.72, 0.82);
+  } else if (HIGH_INCOME_LATAM_APPLE_PRIORS[code] !== undefined) {
+    const applePrior = HIGH_INCOME_LATAM_APPLE_PRIORS[code];
+    multiplier = platform === 'apple'
+      ? applePrior
+      : clamp(applePrior * 0.90, 0.62, 0.75);
+  } else if (SPARSE_APPLE_PRIORS[code] !== undefined) {
+    const applePrior = SPARSE_APPLE_PRIORS[code];
+    multiplier = platform === 'apple'
+      ? applePrior
+      : clamp(applePrior * 0.82, 0.32, 0.70);
   } else if (WESTERN_EUROPE.has(code)) {
     // RevenueCat 2026: Western Europe subscription pricing is near NA. V3
     // therefore compresses PPP more aggressively and raises the floor so

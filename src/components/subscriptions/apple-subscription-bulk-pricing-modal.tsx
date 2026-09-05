@@ -40,6 +40,7 @@ import {
 } from '@/lib/apple-connect/territories';
 import { useAppleAppPrice } from '@/hooks/use-apple-app-price';
 import { useAppleEqualizedPrices } from '@/hooks/use-apple-equalized-prices';
+import { useAppleSmallBusinessProgram } from '@/hooks/use-apple-small-business-program';
 import { findClosestTierForCurrency, getPriceTiersForCurrency } from '@/lib/apple-connect/price-tier-data';
 import { getCurrencySymbol } from '@/lib/utils/currency';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -162,6 +163,8 @@ export function AppleSubscriptionBulkPricingModal({
   const [inputMode, setInputMode] = useState<'tier' | 'manual'>('tier');
   const [strategy, setStrategy] = useState<PricingStrategy>('smart');
   const [rounding, setRounding] = useState<RoundingMode>('nearest-tier');
+  const [smallBusinessProgram, setSmallBusinessProgram] =
+    useAppleSmallBusinessProgram();
   const [selectedRegions, setSelectedRegions] = useState<Set<string>>(new Set());
   const [startDate, setStartDate] = useState<string>('');
   const [isSaving, setIsSaving] = useState(false);
@@ -212,9 +215,15 @@ export function AppleSubscriptionBulkPricingModal({
     for (const [regionCode, price] of Object.entries(equalizedPriceData.prices)) {
       const numericPrice = Number(price.customerPrice);
       if (Number.isFinite(numericPrice)) {
+        const proceeds = Number(price.proceeds);
+        const proceedsYear2 = Number(price.proceedsYear2);
         baselines[regionCode] = {
           price: numericPrice,
           currency: price.currency,
+          proceeds: Number.isFinite(proceeds) ? proceeds : undefined,
+          proceedsYear2: Number.isFinite(proceedsYear2)
+            ? proceedsYear2
+            : undefined,
         };
       }
     }
@@ -386,7 +395,8 @@ export function AppleSubscriptionBulkPricingModal({
       baseCurrency,
       baseRegion,
       getPriceTiersForCurrency, // tier-aware rounding for Apple
-      smartRegionalBaselines
+      smartRegionalBaselines,
+      smallBusinessProgram
     );
 
     // Map to preview format with Apple tier matching
@@ -427,7 +437,7 @@ export function AppleSubscriptionBulkPricingModal({
         multiplierSource: calculated.multiplierSource,
       };
     });
-  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, subscription.prices, baseRegion, baseCurrency, smartRegionalBaselines]);
+  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, subscription.prices, baseRegion, baseCurrency, smartRegionalBaselines, smallBusinessProgram]);
 
   const sortedPreviewPrices = useMemo(() => {
     const items = [...previewPrices];
@@ -1036,6 +1046,27 @@ export function AppleSubscriptionBulkPricingModal({
                 </div>
               </TooltipProvider>
             </div>
+
+            {strategy === 'smart' && (
+              <div className="space-y-2 rounded-lg border p-3">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Checkbox
+                    checked={smallBusinessProgram}
+                    onCheckedChange={(checked) =>
+                      setSmallBusinessProgram(checked === true)
+                    }
+                  />
+                  <span className="text-sm font-medium">
+                    App Store Small Business Program (15% commission)
+                  </span>
+                </label>
+                <p className="text-xs text-muted-foreground ml-6">
+                  Enable this if your Apple developer account is enrolled.
+                  PricingKit uses the 85% proceeds schedule from day one;
+                  standard subscriptions use 70% in year one and 85% after one year.
+                </p>
+              </div>
+            )}
 
             {/* Rounding mode */}
             <div className="space-y-3">

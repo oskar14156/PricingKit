@@ -59,16 +59,28 @@ describe('getSmartPricingMultiplier', () => {
     expect(getSmartPricingMultiplier('MX', 0.57, 'apple')).toBeCloseTo(0.64, 2);
   });
 
-  it('uses compressed PPP for sparse markets', () => {
-    expect(getSmartPricingMultiplier('TW', 0.60, 'apple')).toBeCloseTo(0.77, 2);
-    expect(getSmartPricingMultiplier('SR', 0.31, 'apple')).toBeCloseTo(0.56, 2);
+  it('uses audited iOS priors for sparse and secondary markets', () => {
+    expect(getSmartPricingMultiplier('AF', 0.50, 'apple')).toBeCloseTo(0.45, 2);
+    expect(getSmartPricingMultiplier('BN', 0.50, 'apple')).toBeCloseTo(0.84, 2);
+    expect(getSmartPricingMultiplier('TW', 0.60, 'apple')).toBeCloseTo(0.84, 2);
+    expect(getSmartPricingMultiplier('VU', 0.89, 'apple')).toBeCloseTo(0.55, 2);
+    expect(getSmartPricingMultiplier('FM', 0.96, 'apple')).toBeCloseTo(0.72, 2);
+  });
+
+  it('uses dedicated CEE and high-income LATAM priors', () => {
+    expect(getSmartPricingMultiplier('BG', 0.25, 'apple')).toBeCloseTo(0.68, 2);
+    expect(getSmartPricingMultiplier('RO', 0.46, 'apple')).toBeCloseTo(0.70, 2);
+    expect(getSmartPricingMultiplier('PL', 0.55, 'apple')).toBeCloseTo(0.75, 2);
+    expect(getSmartPricingMultiplier('CZ', 0.63, 'apple')).toBeCloseTo(0.80, 2);
+    expect(getSmartPricingMultiplier('CL', 0.52, 'apple')).toBeCloseTo(0.75, 2);
+    expect(getSmartPricingMultiplier('PA', 0.45, 'apple')).toBeCloseTo(0.75, 2);
   });
 
   it('rejects implausible live-PPP premiums when static PPP says lower-income', () => {
     expect(getSmartPricingMultiplier('AR', 1.8, 'apple', 0.35)).toBeLessThan(0.70);
   });
 
-  it('uses Apple equalized storefront price as the Smart baseline instead of raw FX', () => {
+  it('uses a bounded Apple equalization uplift without changing WTP', () => {
     const dynamicPPP = {
       AT: {
         pppMultiplier: 0.84,
@@ -84,7 +96,22 @@ describe('getSmartPricingMultiplier', () => {
       },
     };
 
-    const result = calculateRegionalPrice(
+    const baselines = {
+      US: {
+        price: 4.99,
+        currency: 'USD',
+        proceeds: 3.49,
+        proceedsYear2: 4.24,
+      },
+      AT: {
+        price: 5.99,
+        currency: 'EUR',
+        proceeds: 3.49,
+        proceedsYear2: 4.24,
+      },
+    };
+
+    const standard = calculateRegionalPrice(
       4.99,
       'AT',
       'smart',
@@ -99,18 +126,48 @@ describe('getSmartPricingMultiplier', () => {
       },
       'USD',
       'US',
-      () => [], // Presence of Apple tiers marks this as Apple pricing.
-      {
-        US: { price: 4.99, currency: 'USD' },
-        AT: { price: 5.99, currency: 'EUR' },
-      }
+      () => [],
+      baselines,
+      false
     );
 
-    const expectedMultiplier = getSmartPricingMultiplier('AT', 0.84, 'apple');
-    expect(result.multiplier).toBeCloseTo(expectedMultiplier, 4);
-    expect(result.rawPrice).toBeCloseTo(5.99 * expectedMultiplier, 2);
+    const smallBusiness = calculateRegionalPrice(
+      4.99,
+      'AT',
+      'smart',
+      'none',
+      undefined,
+      dynamicPPP,
+      { AT: 'EUR' },
+      {
+        base: 'USD',
+        rates: { USD: 1, EUR: 0.85 },
+        fetchedAt: 'test',
+      },
+      'USD',
+      'US',
+      () => [],
+      baselines,
+      true
+    );
 
-    // The old V1 raw-FX path was around EUR 3.97 for the same inputs.
-    expect(result.rawPrice).toBeGreaterThan(5.4);
+    const multiplier = getSmartPricingMultiplier('AT', 0.84, 'apple');
+    const rawFxPrice = 4.99 * 0.85;
+
+    expect(standard.multiplier).toBeCloseTo(multiplier, 4);
+    expect(standard.appleTaxFactor).toBeCloseTo(1.25, 4);
+    expect(standard.rawPrice).toBeCloseTo(
+      rawFxPrice * multiplier * 1.25,
+      2
+    );
+
+    // Small Business affects developer share, not customer pricing.
+    expect(smallBusiness.rawPrice).toBeCloseTo(standard.rawPrice, 4);
+    expect(smallBusiness.estimatedAppleProceeds).toBeGreaterThan(
+      standard.estimatedAppleProceeds ?? 0
+    );
+
+    // Never use the entire €5.99 equalized value as the WTP base.
+    expect(standard.rawPrice).toBeLessThan(5.99 * multiplier);
   });
 });

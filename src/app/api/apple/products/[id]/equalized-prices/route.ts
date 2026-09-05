@@ -20,6 +20,7 @@ interface EqualizedPrice {
   customerPrice: string;
   currency: string;
   pricePointId: string;
+  proceeds?: string;
 }
 
 // GET /api/apple/products/[id]/equalized-prices?territory=USA&price=4.99
@@ -137,6 +138,7 @@ export async function GET(
         customerPrice: point.attributes.customerPrice,
         currency,
         pricePointId: point.id,
+        proceeds: point.attributes.proceeds,
       };
     }
 
@@ -144,6 +146,7 @@ export async function GET(
       customerPrice: source.attributes.customerPrice,
       currency: getTerritoryByAlpha3(baseTerritory)?.currency || 'USD',
       pricePointId: source.id,
+      proceeds: source.attributes.proceeds,
     };
 
     return NextResponse.json({

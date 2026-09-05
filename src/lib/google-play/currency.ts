@@ -22,15 +22,38 @@ export type GetTiersForCurrency = (
 /**
  * Platform-localized baseline price for a territory.
  *
- * For Apple Smart pricing this is the App Store Connect equalized customer
- * price for the selected base price point. It already reflects Apple's FX,
- * certain taxes, and local pricing conventions. Smart then adjusts willingness
- * to pay relative to that Apple baseline.
+ * For Apple Smart pricing this comes from App Store Connect equalizations.
+ * V4 does NOT use it as the full price base. Instead, PricingKit compares it
+ * with the live-FX customer price to infer Apple's tax/local-convention uplift,
+ * then caps that uplift before applying the willingness-to-pay multiplier.
  */
 export interface RegionalPriceBaseline {
   price: number;
   currency: string;
+  proceeds?: number;
+  proceedsYear2?: number;
 }
+
+/**
+ * V4 guardrail for Apple equalization.
+ *
+ * Apple explicitly equalizes global pricing around FX, taxes and local price
+ * conventions, but the resulting matrix can be materially above today's raw
+ * FX + tax equivalent. For revenue-oriented consumer pricing we use Apple as a
+ * tax/convention signal, not as an unlimited proceeds-equalization anchor.
+ *
+ * 1.25 roughly covers even high VAT/GST storefronts while preventing a stale
+ * or aggressive equalization matrix from dominating the app-market WTP model.
+ */
+export const APPLE_EQUALIZATION_UPLIFT_CAP = 1.25;
+
+const APPLE_STANDARD_DEVELOPER_SHARE = 0.70;
+const APPLE_REDUCED_DEVELOPER_SHARE = 0.85;
+
+// Apple price-point `proceeds` values are useful for developer-share
+// estimates, but they do not reliably expose the territory's VAT/tax factor.
+// Smart pricing therefore uses Apple's equalized customer price only as a
+// bounded local tax/pricing-convention signal.
 
 // Dynamic exchange rates from API (passed to calculation functions)
 export interface DynamicExchangeRates {
@@ -187,6 +210,9 @@ export interface CalculatedPrice {
   exchangeRate: number;
   /** The PPP-adjusted price in USD (before currency conversion) */
   adjustedUsdPrice: number;
+  appleTaxFactor?: number;
+  estimatedAppleProceeds?: number;
+  estimatedAppleProceedsYear2?: number;
 }
 
 // Dynamic PPP data from World Bank API
@@ -222,7 +248,8 @@ export function calculateRegionalPrice(
   baseCurrency: string = 'USD', // The currency of the basePrice
   baseRegion: string = 'US', // The region the basePrice is defined for
   getTiersForCurrency?: GetTiersForCurrency, // Optional tier ladder per currency (Apple)
-  regionalBaselines?: Record<string, RegionalPriceBaseline> // Apple equalized storefront baselines
+  regionalBaselines?: Record<string, RegionalPriceBaseline>, // Apple equalized storefront baselines
+  appleSmallBusinessProgram: boolean = false
 ): CalculatedPrice {
   // Convert to alpha-2 for lookups (handles both alpha-2 and alpha-3 inputs)
   const alpha2Code = toAlpha2(regionCode);
@@ -270,6 +297,7 @@ export function calculateRegionalPrice(
   let calculatedPrice: number;
   let effectiveMultiplier: number = 1.0;
   let multiplierSource: CalculatedPrice['multiplierSource'] = 'direct';
+  let appleTaxFactor: number | undefined;
 
   // Get Big Mac multiplier (from dynamic data or static, using alpha-2 for lookup)
   const bigMacMultiplier = dynamicEntry?.bigMacMultiplier ?? getBigMacMultiplier(alpha2Code);
@@ -301,29 +329,37 @@ switch (strategy) {
       multiplierSource = 'direct';
       break;
 case 'smart': {
-  // App-market strategy: compressed PPP + platform/region priors.
-  // Normalize relative to the selected base region, just like the other
-  // indexes, so a non-US base country still behaves correctly.
+  // Final V4.1:
+  // base customer price -> live FX -> app-market WTP
+  // -> bounded Apple local tax/pricing-convention uplift -> Apple tier.
   effectiveMultiplier = smartMultiplier / baseSmartMultiplier;
+  const rawFxPrice = baseUsdPrice * exchangeRate;
+  calculatedPrice = rawFxPrice * effectiveMultiplier;
 
-  // On Apple, prefer the price point that Apple itself equalizes from the
-  // selected base price point. Apple's equalization already accounts for
-  // storefront FX, certain taxes, and local pricing conventions. Applying
-  // Smart on top means a displayed 0.95× is genuinely ~5% below Apple's
-  // comparable local price instead of ~5% below a raw FX conversion.
   const localizedBaseline =
     regionalBaselines?.[regionCode] ?? regionalBaselines?.[alpha2Code];
 
   if (
     pricingPlatform === 'apple' &&
     localizedBaseline &&
+    localizedBaseline.currency === currencyCode &&
     Number.isFinite(localizedBaseline.price) &&
-    localizedBaseline.price >= 0 &&
-    localizedBaseline.currency === currencyCode
+    localizedBaseline.price > 0 &&
+    rawFxPrice > 0
   ) {
-    calculatedPrice = localizedBaseline.price * effectiveMultiplier;
-  } else {
-    calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
+    const equalizationUplift = localizedBaseline.price / rawFxPrice;
+
+    if (Number.isFinite(equalizationUplift) && equalizationUplift > 0) {
+      // Apple equalizations contain useful tax + storefront convention
+      // information, but are not allowed to dominate the WTP target.
+      const boundedUplift = Math.min(
+        equalizationUplift,
+        APPLE_EQUALIZATION_UPLIFT_CAP
+      );
+
+      appleTaxFactor = boundedUplift;
+      calculatedPrice *= boundedUplift;
+    }
   }
 
   multiplierSource = 'app-market';
@@ -457,6 +493,19 @@ case 'ppp':
   // The PPP-adjusted USD price before currency conversion
   const adjustedUsdPrice = baseUsdPrice * effectiveMultiplier;
 
+  const estimatedAppleProceeds =
+    pricingPlatform === 'apple' && appleTaxFactor
+      ? (calculatedPrice / appleTaxFactor) *
+        (appleSmallBusinessProgram
+          ? APPLE_REDUCED_DEVELOPER_SHARE
+          : APPLE_STANDARD_DEVELOPER_SHARE)
+      : undefined;
+
+  const estimatedAppleProceedsYear2 =
+    pricingPlatform === 'apple' && appleTaxFactor
+      ? (calculatedPrice / appleTaxFactor) * APPLE_REDUCED_DEVELOPER_SHARE
+      : undefined;
+
   return {
     regionCode,
     currencyCode,
@@ -466,6 +515,9 @@ case 'ppp':
     multiplierSource,
     exchangeRate,
     adjustedUsdPrice,
+    appleTaxFactor,
+    estimatedAppleProceeds,
+    estimatedAppleProceedsYear2,
   };
 }
 
@@ -482,7 +534,8 @@ export function calculateBulkPrices(
   baseCurrency: string = 'USD', // The currency of the basePrice
   baseRegion: string = 'US', // The region the basePrice is defined for
   getTiersForCurrency?: GetTiersForCurrency, // Optional tier ladder per currency (Apple)
-  regionalBaselines?: Record<string, RegionalPriceBaseline> // Apple equalized storefront baselines
+  regionalBaselines?: Record<string, RegionalPriceBaseline>, // Apple equalized storefront baselines
+  appleSmallBusinessProgram: boolean = false
 ): CalculatedPrice[] {
   return regionCodes.map((regionCode) => {
     const customMultiplier = customMultipliers?.[regionCode];
@@ -498,7 +551,8 @@ export function calculateBulkPrices(
       baseCurrency,
       baseRegion,
       getTiersForCurrency,
-      regionalBaselines
+      regionalBaselines,
+      appleSmallBusinessProgram
     );
   });
 }

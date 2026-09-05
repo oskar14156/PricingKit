@@ -44,6 +44,7 @@ import { findClosestTierForCurrency, getPriceTiersForCurrency } from '@/lib/appl
 import { getCurrencySymbol as sharedGetCurrencySymbol } from '@/lib/utils/currency';
 import { useAppleAppPrice } from '@/hooks/use-apple-app-price';
 import { useAppleEqualizedPrices } from '@/hooks/use-apple-equalized-prices';
+import { useAppleSmallBusinessProgram } from '@/hooks/use-apple-small-business-program';
 import {
   Select,
   SelectContent,
@@ -210,6 +211,8 @@ export function BulkPricingModal({
   }, [baseRegion, priceForBaseRegion]);
 
   const [strategy, setStrategy] = useState<PricingStrategy>('smart');
+  const [smallBusinessProgram, setSmallBusinessProgram] =
+    useAppleSmallBusinessProgram();
   const [rounding, setRounding] = useState<RoundingMode>(
     platform === 'apple' ? 'nearest-tier' : 'nearest-99'
   );
@@ -260,9 +263,11 @@ export function BulkPricingModal({
     for (const [regionCode, price] of Object.entries(equalizedPriceData.prices)) {
       const numericPrice = Number(price.customerPrice);
       if (Number.isFinite(numericPrice)) {
+        const proceeds = Number(price.proceeds);
         baselines[regionCode] = {
           price: numericPrice,
           currency: price.currency,
+          proceeds: Number.isFinite(proceeds) ? proceeds : undefined,
         };
       }
     }
@@ -444,7 +449,8 @@ export function BulkPricingModal({
       baseCurrency,
       baseRegion,
       platform === 'apple' ? getPriceTiersForCurrency : undefined,
-      platform === 'apple' ? smartRegionalBaselines : undefined
+      platform === 'apple' ? smartRegionalBaselines : undefined,
+      platform === 'apple' ? smallBusinessProgram : false
     );
 
     // For Apple, match each calculated price to the closest available tier
@@ -464,7 +470,7 @@ export function BulkPricingModal({
     }) : calculatedPrices;
 
     return finalPrices;
-  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, platform, baseCurrency, baseRegion, smartRegionalBaselines]);
+  }, [basePriceNum, targetRegions, strategy, rounding, pppData, actualCurrencies, exchangeRates, platform, baseCurrency, baseRegion, smartRegionalBaselines, smallBusinessProgram]);
 
   // Get current price for a region
   const getCurrentPrice = useCallback((regionCode: string): Money | null => {
@@ -1069,6 +1075,26 @@ export function BulkPricingModal({
               </div>
             </TooltipProvider>
           </div>
+
+          {platform === 'apple' && strategy === 'smart' && (
+            <div className="space-y-2 rounded-lg border p-3">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <Checkbox
+                  checked={smallBusinessProgram}
+                  onCheckedChange={(checked) =>
+                    setSmallBusinessProgram(checked === true)
+                  }
+                />
+                <span className="text-sm font-medium">
+                  App Store Small Business Program (15% commission)
+                </span>
+              </label>
+              <p className="text-xs text-muted-foreground ml-6">
+                Enable this if your Apple developer account is enrolled.
+                PricingKit then estimates your proceeds at the 85% developer share.
+              </p>
+            </div>
+          )}
 
           {/* Rounding Options */}
           <div className="space-y-3">

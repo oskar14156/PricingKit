@@ -142,3 +142,107 @@ The purpose is not to maximize conversion rate. The prior is intentionally
 biased toward maximizing revenue / payer LTV for digital apps with negligible
 marginal cost. It should still be replaced by country/platform RPU or LTV
 experiments as soon as first-party data is statistically useful.
+
+## V4 consumer-price equalization guardrail
+
+V4 changes the role of Apple's equalized storefront prices.
+
+V2/V3 treated Apple's equalized customer price as the complete local baseline:
+
+```text
+Apple equalized customer price
+        ×
+Smart willingness-to-pay factor
+```
+
+That is useful for keeping developer proceeds comparable, but it can overstate
+the price a customer should see when Apple's equalization matrix is materially
+above the current FX + tax equivalent.
+
+V4 instead targets the customer-facing price:
+
+```text
+US/base customer price
+        ↓
+current FX conversion
+        ↓
+Smart app-market willingness-to-pay factor
+        ↓
+bounded Apple tax/local-convention uplift (max 1.25x)
+        ↓
+nearest valid Apple price point
+```
+
+Apple equalization is therefore still used, but only as a signal for taxes and
+local pricing conventions. The uplift is measured as:
+
+```text
+Apple equalized local price / raw-FX local price
+```
+
+and capped at `1.25x`.
+
+Example with a $4.99 US base and EUR/USD around 0.86:
+
+```text
+raw FX:                     about €4.29
+Apple equalized baseline:        €5.99
+equalization uplift:             ~1.40x
+V4 bounded uplift:                1.25x
+AT Smart WTP factor:             ~0.96x
+consumer target:            ~€5.15
+```
+
+The exact final value is then snapped to an available Apple price point.
+
+Why this is closer to the intended objective:
+
+- Apple says its automatic equalization is driven by FX, certain taxes and
+  local pricing conventions and is designed to keep global earnings consistent.
+- Revenue-oriented app pricing should instead optimize the customer-facing
+  price / RPU / LTV.
+- Large app publishers do not use one universal rule: observed video-app
+  pricing ranges from same-numeric USD/EUR pricing to Apple's higher equalized
+  EUR tiers, and companies such as Mojo explicitly A/B test local prices.
+- The 1.25x cap is a guardrail, not a claimed universal optimum. It roughly
+  accommodates high VAT/GST storefronts while stopping the equalization matrix
+  from overwhelming the willingness-to-pay model.
+
+The next upgrade after V4 should be first-party price experimentation. Once a
+country/platform has enough volume, measured RPU/LTV should replace the prior.
+
+## V4.1 final revenue prior
+
+V4.1 is the production candidate before first-party price experiments.
+
+Changes from V4:
+
+- Apple customer tax is inferred from App Store Connect price-point proceeds
+  (`customerPrice`, `proceeds`, `proceedsYear2`) instead of using the hard
+  1.25x equalization cap as the primary path.
+- A persistent App Store Small Business Program toggle switches proceeds
+  estimation to the 85% developer share from day one.
+- Afghanistan and other sparse low-income markets no longer inherit the
+  accidental `sqrt(0.50) ~= 0.71` missing-data behavior.
+- Taiwan, Macao and Brunei receive a secondary high-income Asia prior below
+  Singapore/Hong Kong.
+- Central/Eastern Europe and high-income LATAM receive audited iOS priors.
+- Pacific island outliers such as Vanuatu, Solomon Islands and Micronesia are
+  prevented from inheriting implausibly high app-WTP from local price levels.
+- Bulgaria uses EUR for Apple's storefront.
+- Open Exchange Rates remains primary when configured; otherwise Frankfurter
+  v2 provides no-key live USD exchange rates.
+
+The customer-price path is:
+
+```text
+base customer price
+  -> live FX
+  -> app-market / iOS willingness-to-pay prior
+  -> Apple-derived local tax factor
+  -> nearest valid Apple price point
+```
+
+This is a no-first-party-data prior, not a mathematical proof of the revenue
+optimum. Once enough traffic exists, country/platform revenue-per-install and
+LTV experiments should replace the prior.

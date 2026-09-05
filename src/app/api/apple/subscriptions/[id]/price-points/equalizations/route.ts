@@ -17,6 +17,8 @@ interface EqualizedPrice {
   customerPrice: string;
   currency: string;
   pricePointId: string;
+  proceeds?: string;
+  proceedsYear2?: string;
 }
 
 // GET /api/apple/subscriptions/[id]/price-points/equalizations?territory=USA&price=4.99
@@ -83,7 +85,7 @@ export async function GET(
         queryParams: {
           include: 'territory',
           limit: '8000',
-          'fields[subscriptionPricePoints]': 'customerPrice,proceeds,territory',
+          'fields[subscriptionPricePoints]': 'customerPrice,proceeds,proceedsYear2,territory',
           'fields[territories]': 'currency',
         },
       }
@@ -111,6 +113,8 @@ export async function GET(
         customerPrice: point.attributes.customerPrice,
         currency,
         pricePointId: point.id,
+        proceeds: point.attributes.proceeds,
+        proceedsYear2: point.attributes.proceedsYear2,
       };
     }
 
@@ -121,6 +125,8 @@ export async function GET(
       customerPrice: source.customerPrice,
       currency: getTerritoryByAlpha3(baseTerritory)?.currency || 'USD',
       pricePointId: source.id,
+      proceeds: source.proceeds,
+      proceedsYear2: source.proceedsYear2,
     };
 
     return NextResponse.json({

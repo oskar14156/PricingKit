@@ -5,9 +5,10 @@ import { getPricingIndexEntry, LOCAL_CURRENCIES } from '../conversion-indexes/pp
 import { getBigMacMultiplier } from '../conversion-indexes/big-mac';
 import { getNetflixMultiplier } from '../conversion-indexes/netflix';
 import { FALLBACK_EXCHANGE_RATES } from '../conversion-indexes/exchange-rates';
+import { getSmartPricingMultiplier, type PricingPlatform } from '../conversion-indexes/smart';
 import { alpha3ToAlpha2 } from '../apple-connect/territories';
 
-export type PricingStrategy = 'direct' | 'ppp' | 'bigmac' | 'netflix' | 'custom';
+export type PricingStrategy = 'direct' | 'smart' | 'ppp' | 'bigmac' | 'netflix' | 'custom';
 export type RoundingMode = 'nearest-tier' | 'nearest-99' | 'round-up' | 'none';
 
 export interface RoundingTier {
@@ -168,7 +169,7 @@ export interface CalculatedPrice {
   /** The multiplier applied to the base price (before exchange rate) */
   multiplier: number;
   /** Source of the multiplier data */
-  multiplierSource?: 'world-bank' | 'big-mac' | 'netflix' | 'static' | 'custom' | 'direct';
+  multiplierSource?: 'app-market' | 'world-bank' | 'big-mac' | 'netflix' | 'static' | 'custom' | 'direct';
   /** The exchange rate from USD to local currency */
   exchangeRate: number;
   /** The PPP-adjusted price in USD (before currency conversion) */
@@ -262,14 +263,38 @@ export function calculateRegionalPrice(
   const netflixMultiplier = dynamicEntry?.netflixMultiplier ?? getNetflixMultiplier(alpha2Code);
   const baseNetflixMultiplier = baseDynamicEntry?.netflixMultiplier ?? getNetflixMultiplier(alpha2BaseRegion);
 
-  switch (strategy) {
+// Apple callers pass a tier ladder; Google callers do not. Keep platform
+// inference local so existing call sites remain backwards compatible.
+const pricingPlatform: PricingPlatform = getTiersForCurrency ? 'apple' : 'google';
+const smartMultiplier = getSmartPricingMultiplier(
+  alpha2Code,
+  pppMultiplier,
+  pricingPlatform,
+  staticEntry.pppMultiplier
+);
+const baseSmartMultiplier = getSmartPricingMultiplier(
+  alpha2BaseRegion,
+  basePppMultiplier,
+  pricingPlatform,
+  baseStaticEntry.pppMultiplier
+);
+
+switch (strategy) {
     case 'direct':
       // Same USD value everywhere - just convert currency using market exchange rate
       calculatedPrice = baseUsdPrice * exchangeRate;
       effectiveMultiplier = 1.0;
       multiplierSource = 'direct';
       break;
-    case 'ppp':
+case 'smart':
+  // App-market strategy: compressed PPP + platform/region priors.
+  // Normalize relative to the selected base region, just like the other
+  // indexes, so a non-US base country still behaves correctly.
+  effectiveMultiplier = smartMultiplier / baseSmartMultiplier;
+  calculatedPrice = baseUsdPrice * effectiveMultiplier * exchangeRate;
+  multiplierSource = 'app-market';
+  break;
+case 'ppp':
       // PPP strategy: adjust prices based on purchasing power parity
       //
       // The World Bank PPP conversion factor is in LOCAL CURRENCY units per international $.

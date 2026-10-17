@@ -5,7 +5,7 @@ import { getPricingIndexEntry, LOCAL_CURRENCIES } from '../conversion-indexes/pp
 import { getBigMacMultiplier } from '../conversion-indexes/big-mac';
 import { getNetflixMultiplier } from '../conversion-indexes/netflix';
 import { FALLBACK_EXCHANGE_RATES } from '../conversion-indexes/exchange-rates';
-import { getSmartPricingMultiplier, type PricingPlatform } from '../conversion-indexes/smart';
+import { getSmartPricingBreakdown, type PricingPlatform } from '../conversion-indexes/smart';
 import { alpha3ToAlpha2 } from '../apple-connect/territories';
 import { findPreferredTierIndex } from '../apple-connect/price-tier-selection';
 
@@ -213,6 +213,10 @@ export interface CalculatedPrice {
   appleTaxFactor?: number;
   estimatedAppleProceeds?: number;
   estimatedAppleProceedsYear2?: number;
+  /** Smart on Google Play: Android/iOS payer factor (US = 1). */
+  androidPlatformFactor?: number;
+  /** Smart on Google Play: iOS mobile share behind the Android factor. */
+  iosShare?: number;
 }
 
 // Dynamic PPP data from World Bank API
@@ -308,18 +312,19 @@ export function calculateRegionalPrice(
 // Apple callers pass a tier ladder; Google callers do not. Keep platform
 // inference local so existing call sites remain backwards compatible.
 const pricingPlatform: PricingPlatform = getTiersForCurrency ? 'apple' : 'google';
-const smartMultiplier = getSmartPricingMultiplier(
+const smartBreakdown = getSmartPricingBreakdown(
   alpha2Code,
   pppMultiplier,
   pricingPlatform,
   staticEntry.pppMultiplier
 );
-const baseSmartMultiplier = getSmartPricingMultiplier(
+const smartMultiplier = smartBreakdown.multiplier;
+const baseSmartMultiplier = getSmartPricingBreakdown(
   alpha2BaseRegion,
   basePppMultiplier,
   pricingPlatform,
   baseStaticEntry.pppMultiplier
-);
+).multiplier;
 
 switch (strategy) {
     case 'direct':
@@ -518,6 +523,12 @@ case 'ppp':
     appleTaxFactor,
     estimatedAppleProceeds,
     estimatedAppleProceedsYear2,
+    ...(strategy === 'smart' && pricingPlatform === 'google'
+      ? {
+          androidPlatformFactor: smartBreakdown.androidPlatformFactor,
+          iosShare: smartBreakdown.iosShare,
+        }
+      : {}),
   };
 }
 

@@ -14,6 +14,10 @@
  * markets without enough first-party experiment data; once an app has
  * sufficient volume, country-level RPU/LTV experiments should supersede it.
  *
+ * V5: Google Play no longer uses hand-tuned per-region discounts. It takes
+ * the iOS prior and removes the iOS-only payer-selection premium using each
+ * market's iOS share (see `getAndroidPlatformFactor`).
+ *
  * Calibration references (reviewed 2026-09):
  * - RevenueCat, State of Subscription Apps 2026
  *   https://www.revenuecat.com/state-of-subscription-apps
@@ -24,6 +28,8 @@
  * - Jacob Rushfinn's basket of large apps (Calm, Strava, Duolingo, etc.)
  *   https://www.retention.blog/p/global-pricing-guidance
  */
+
+import { getIosMobileShare } from './platform-share';
 
 export type PricingPlatform = 'apple' | 'google';
 
@@ -163,15 +169,216 @@ function sanitizePpp(
   return clamp(ppp, 0.1, 1.6);
 }
 
+// --- Android platform-selection model (V5) ---------------------------------
+//
+// The iOS priors above bake in a payer-selection premium: where iPhones are a
+// niche, the people who own them (and pay through the App Store) are a much
+// richer slice of the population than raw PPP describes. Afghanistan is the
+// extreme case: ~12% iOS share means iPhone owners are a small urban elite.
+//
+// That premium does not carry over to Google Play. Where Android is the mass
+// platform, Android payers are much closer to the average smartphone owner.
+// It does NOT disappear completely either: Android payers still need a
+// smartphone, a working Play payment method and willingness to pay, so raw
+// PPP would still over-discount. And because WTP is heavy-tailed, the
+// revenue-maximizing price sits above the median payer's WTP.
+//
+// Model: smartphone users are sorted by a latent affluence score ~ N(0, 1);
+// iOS users are the top `s` share (s = iOS mobile share). The gap between the
+// mean affluence of iOS users and Android users is
+//
+//   gap(s) = phi(z) / (s * (1 - s)),  z = PhiInverse(1 - s)
+//
+// (difference of the two truncated-normal means). The gap is flat for
+// mid-range shares (30-60% iOS: both platforms are mass market) and grows
+// quickly when iOS becomes a niche. Smart multipliers are relative to the US
+// on the same platform, so only the gap in excess of the US gap matters:
+//
+//   androidFactor = exp(-K * (gap(s_country) - gap(s_US)))
+//
+// K is calibrated so India (~6% iOS) lands near the ~0.70-0.75 Play/App
+// Store price ratio RevenueCat reports for IN/SEA (Play annual median
+// ~$14.64 vs a blended $18.32; Play monthly ~$3.12 vs blended $3.75), while
+// North America stays at parity, as observed. It also reproduces the previous
+// hand-tuned Brazil gap (~0.92).
+
+export const ANDROID_SELECTION_STRENGTH = 0.6;
+
+// Guardrail: never price Android more than 30% below iOS in the same market.
+// Larger gaps invite cross-platform arbitrage (subscribe on the cheaper
+// platform, use everywhere) and go beyond the observed store benchmarks.
+export const MIN_ANDROID_PLATFORM_FACTOR = 0.70;
+
+const US_IOS_SHARE = 0.597;
+
+function normalPdf(x: number): number {
+  return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+}
+
+// Acklam's rational approximation of the inverse standard normal CDF
+// (relative error < 1.2e-9), sufficient for a pricing prior.
+function normalInverseCdf(p: number): number {
+  const a = [
+    -3.969683028665376e1, 2.209460984245205e2, -2.759285104469687e2,
+    1.38357751867269e2, -3.066479806614716e1, 2.506628277459239,
+  ];
+  const b = [
+    -5.447609879822406e1, 1.615858368580409e2, -1.556989798598866e2,
+    6.680131188771972e1, -1.328068155288572e1,
+  ];
+  const c = [
+    -7.784894002430293e-3, -3.223964580411365e-1, -2.400758277161838,
+    -2.549732539343734, 4.374664141464968, 2.938163982698783,
+  ];
+  const d = [
+    7.784695709041462e-3, 3.224671290700398e-1, 2.445134137142996,
+    3.754408661907416,
+  ];
+  const pLow = 0.02425;
+
+  if (p < pLow) {
+    const q = Math.sqrt(-2 * Math.log(p));
+    return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+      ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+  }
+  if (p > 1 - pLow) {
+    return -normalInverseCdf(1 - p);
+  }
+  const q = p - 0.5;
+  const r = q * q;
+  return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q /
+    (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+}
+
+function platformAffluenceGap(iosShare: number): number {
+  const s = clamp(iosShare, 0.02, 0.98);
+  const z = normalInverseCdf(1 - s);
+  return normalPdf(z) / (s * (1 - s));
+}
+
+const US_AFFLUENCE_GAP = platformAffluenceGap(US_IOS_SHARE);
+
 /**
- * Convert a raw US-relative PPP multiplier into an app-market multiplier.
+ * Android payer WTP relative to iOS payer WTP in the same market, normalized
+ * so the US is 1.0. Returns a value in [MIN_ANDROID_PLATFORM_FACTOR, 1].
+ */
+export function getAndroidPlatformFactor(regionCode: string): number {
+  const code = regionCode.toUpperCase();
+  const iosShare = getIosMobileShare(code);
+
+  // Where iOS is at least as mainstream as in the US, the two platforms'
+  // payer bases differ no more than they do in the US.
+  if (code === 'US' || iosShare >= US_IOS_SHARE) return 1;
+
+  const excessGap = platformAffluenceGap(iosShare) - US_AFFLUENCE_GAP;
+  const factor = Math.exp(-ANDROID_SELECTION_STRENGTH * excessGap);
+  return Math.round(clamp(factor, MIN_ANDROID_PLATFORM_FACTOR, 1) * 10_000) / 10_000;
+}
+
+/**
+ * iOS app-market multiplier relative to the US.
  *
  * Why exponents < 1? `x^a` for 0 < x < 1 and a < 1 compresses the discount.
  * That models the selection effect that paying smartphone users are more
  * affluent than the population-wide consumer represented by raw PPP.
- *
- * Emerging-market iOS floors are higher than Android floors because observed
- * App Store payer value/pricing diverges materially from Google Play there.
+ */
+function getAppleSmartMultiplier(code: string, ppp: number): number {
+  // Basket-of-app evidence puts Canada approximately at US parity.
+  if (code === 'CA') return 1;
+  if (CEE_APPLE_PRIORS[code] !== undefined) return CEE_APPLE_PRIORS[code];
+  if (SECONDARY_HIGH_INCOME_ASIA[code] !== undefined) {
+    return SECONDARY_HIGH_INCOME_ASIA[code];
+  }
+  if (HIGH_INCOME_LATAM_APPLE_PRIORS[code] !== undefined) {
+    return HIGH_INCOME_LATAM_APPLE_PRIORS[code];
+  }
+  if (SPARSE_APPLE_PRIORS[code] !== undefined) return SPARSE_APPLE_PRIORS[code];
+
+  if (WESTERN_EUROPE.has(code)) {
+    // RevenueCat 2026: Western Europe subscription pricing is near NA. V3
+    // therefore compresses PPP more aggressively and raises the floor so
+    // countries such as ES/PT are not discounted like emerging markets.
+    return clamp(Math.pow(ppp, 0.25), 0.90, 1.08);
+  }
+  if (DEVELOPED_EAST_ASIA.has(code)) {
+    // Japan and Korea have high-value paid-app audiences. V3 moves them closer
+    // to top-market pricing while retaining a modest regional discount.
+    return clamp(Math.pow(ppp, 0.30), 0.85, 0.95);
+  }
+  if (OCEANIA.has(code)) {
+    // Australia / New Zealand were already close to the desired revenue prior.
+    return clamp(Math.pow(ppp, 0.45), 0.80, 0.95);
+  }
+  if (HIGH_INCOME_ASIA.has(code)) {
+    // Singapore / Hong Kong should sit materially above broad SEA pricing.
+    return clamp(Math.pow(ppp, 0.25), 0.90, 1.00);
+  }
+  if (HIGH_INCOME_GULF.has(code)) {
+    // Wealthy Gulf states get their own curve instead of the deep-discount MEA
+    // bucket because the iOS payer mix is especially affluent.
+    return clamp(Math.pow(ppp, 0.15), 0.88, 1.00);
+  }
+  if (EMERGING_ASIA.has(code)) {
+    // RevenueCat: IN/SEA prices ~46-54% of top markets; iOS payer value is
+    // materially stronger than Play. Avoid raw PPP floors around 0.20-0.30.
+    return clamp(Math.pow(ppp, 0.62), 0.45, 0.78);
+  }
+  if (LATIN_AMERICA.has(code)) {
+    // Basket-of-app guidance: BR roughly 40-55%, MX roughly 60-70% of US.
+    return clamp(Math.pow(ppp, 0.80), 0.40, 0.70);
+  }
+  if (MIDDLE_EAST_AFRICA.has(code)) {
+    return clamp(Math.pow(ppp, 0.65), 0.40, 0.85);
+  }
+  // Sparse-data fallback: compressed PPP with a floor. Deliberately less
+  // aggressive than raw PPP because the paid-app audience is usually richer.
+  return clamp(Math.sqrt(ppp), 0.45, 1.08);
+}
+
+export interface SmartPricingBreakdown {
+  multiplier: number;
+  /** iOS app-market multiplier for the same storefront. */
+  appleMultiplier: number;
+  /** Android/iOS payer factor (Google only). */
+  androidPlatformFactor?: number;
+  /** iOS mobile share used for the Android factor (Google only). */
+  iosShare?: number;
+}
+
+export function getSmartPricingBreakdown(
+  regionCode: string,
+  rawPppMultiplier: number,
+  platform: PricingPlatform = 'apple',
+  staticPppMultiplier?: number
+): SmartPricingBreakdown {
+  const code = regionCode.toUpperCase();
+  if (code === 'US') {
+    return platform === 'apple'
+      ? { multiplier: 1, appleMultiplier: 1 }
+      : { multiplier: 1, appleMultiplier: 1, androidPlatformFactor: 1, iosShare: US_IOS_SHARE };
+  }
+
+  const ppp = sanitizePpp(rawPppMultiplier, staticPppMultiplier);
+  const appleMultiplier = getAppleSmartMultiplier(code, ppp);
+  const round = (value: number) => Math.round(value * 10_000) / 10_000;
+
+  if (platform === 'apple') {
+    return { multiplier: round(appleMultiplier), appleMultiplier: round(appleMultiplier) };
+  }
+
+  // Google Play: same app-market level, minus the iOS-only selection premium.
+  const androidPlatformFactor = getAndroidPlatformFactor(code);
+  return {
+    multiplier: round(appleMultiplier * androidPlatformFactor),
+    appleMultiplier: round(appleMultiplier),
+    androidPlatformFactor,
+    iosShare: getIosMobileShare(code),
+  };
+}
+
+/**
+ * Convert a raw US-relative PPP multiplier into an app-market multiplier for
+ * the given store. Google Play = iOS prior x Android platform factor.
  */
 export function getSmartPricingMultiplier(
   regionCode: string,
@@ -179,88 +386,10 @@ export function getSmartPricingMultiplier(
   platform: PricingPlatform = 'apple',
   staticPppMultiplier?: number
 ): number {
-  const code = regionCode.toUpperCase();
-  if (code === 'US') return 1;
-
-  const ppp = sanitizePpp(rawPppMultiplier, staticPppMultiplier);
-  let multiplier: number;
-
-  // Basket-of-app evidence puts Canada approximately at US parity.
-  if (code === 'CA') {
-    multiplier = 1;
-  } else if (CEE_APPLE_PRIORS[code] !== undefined) {
-    const applePrior = CEE_APPLE_PRIORS[code];
-    multiplier = platform === 'apple'
-      ? applePrior
-      : clamp(applePrior * 0.90, 0.58, 0.78);
-  } else if (SECONDARY_HIGH_INCOME_ASIA[code] !== undefined) {
-    const applePrior = SECONDARY_HIGH_INCOME_ASIA[code];
-    multiplier = platform === 'apple'
-      ? applePrior
-      : clamp(applePrior * 0.92, 0.72, 0.82);
-  } else if (HIGH_INCOME_LATAM_APPLE_PRIORS[code] !== undefined) {
-    const applePrior = HIGH_INCOME_LATAM_APPLE_PRIORS[code];
-    multiplier = platform === 'apple'
-      ? applePrior
-      : clamp(applePrior * 0.90, 0.62, 0.75);
-  } else if (SPARSE_APPLE_PRIORS[code] !== undefined) {
-    const applePrior = SPARSE_APPLE_PRIORS[code];
-    multiplier = platform === 'apple'
-      ? applePrior
-      : clamp(applePrior * 0.82, 0.32, 0.70);
-  } else if (WESTERN_EUROPE.has(code)) {
-    // RevenueCat 2026: Western Europe subscription pricing is near NA. V3
-    // therefore compresses PPP more aggressively and raises the floor so
-    // countries such as ES/PT are not discounted like emerging markets.
-    multiplier = clamp(
-      Math.pow(ppp, 0.25),
-      0.90,
-      platform === 'apple' ? 1.08 : 1.05
-    );
-  } else if (DEVELOPED_EAST_ASIA.has(code)) {
-    // Japan and Korea have high-value paid-app audiences. V3 moves them closer
-    // to top-market pricing while retaining a modest regional discount.
-    multiplier = clamp(Math.pow(ppp, 0.30), 0.85, 0.95);
-  } else if (OCEANIA.has(code)) {
-    // Australia / New Zealand were already close to the desired revenue prior.
-    multiplier = clamp(Math.pow(ppp, 0.45), 0.80, 0.95);
-  } else if (HIGH_INCOME_ASIA.has(code)) {
-    // Singapore / Hong Kong should sit materially above broad SEA pricing.
-    multiplier = clamp(Math.pow(ppp, 0.25), 0.90, 1.00);
-  } else if (HIGH_INCOME_GULF.has(code)) {
-    // Wealthy Gulf states get their own curve instead of the deep-discount MEA
-    // bucket. Apple is intentionally stronger because the iOS payer mix is
-    // especially affluent; Google retains a modest platform discount.
-    multiplier = platform === 'apple'
-      ? clamp(Math.pow(ppp, 0.15), 0.88, 1.00)
-      : clamp(Math.pow(ppp, 0.20), 0.82, 0.95);
-  } else if (EMERGING_ASIA.has(code)) {
-    if (platform === 'apple') {
-      // RevenueCat: IN/SEA prices ~46-54% of top markets; iOS payer value is
-      // materially stronger than Play. Avoid raw PPP floors around 0.20-0.30.
-      multiplier = clamp(Math.pow(ppp, 0.62), 0.45, 0.78);
-    } else {
-      // IN/SEA Play annual median is materially lower than App Store pricing.
-      multiplier = clamp(Math.pow(ppp, 0.72), 0.32, 0.68);
-    }
-  } else if (LATIN_AMERICA.has(code)) {
-    // Basket-of-app guidance: BR roughly 40-55%, MX roughly 60-70% of US.
-    // This reproduces that range from PPP without hardcoding every country.
-    multiplier = platform === 'apple'
-      ? clamp(Math.pow(ppp, 0.80), 0.40, 0.70)
-      : clamp(Math.pow(ppp, 0.90), 0.35, 0.66);
-  } else if (MIDDLE_EAST_AFRICA.has(code)) {
-    // RevenueCat shows a pronounced App Store vs Play price gap in MEA.
-    multiplier = platform === 'apple'
-      ? clamp(Math.pow(ppp, 0.65), 0.40, 0.85)
-      : clamp(Math.pow(ppp, 0.75), 0.34, 0.72);
-  } else {
-    // Sparse-data fallback: compressed PPP with a floor. Deliberately less
-    // aggressive than raw PPP because the paid-app audience is usually richer.
-    multiplier = platform === 'apple'
-      ? clamp(Math.sqrt(ppp), 0.45, 1.08)
-      : clamp(Math.pow(ppp, 0.60), 0.38, 1.03);
-  }
-
-  return Math.round(multiplier * 10_000) / 10_000;
+  return getSmartPricingBreakdown(
+    regionCode,
+    rawPppMultiplier,
+    platform,
+    staticPppMultiplier
+  ).multiplier;
 }

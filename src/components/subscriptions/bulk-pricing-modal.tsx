@@ -665,9 +665,9 @@ export function SubscriptionBulkPricingModal({
 
                         Revenue-oriented app pricing: compressed PPP plus mobile-market and
 
-                        platform priors. Google Play receives more aggressive emerging-market
+                        platform priors. Google Play removes the iOS-only wealth premium: the
 
-                        discounts than iOS, matching observed subscription-market behavior.
+                        smaller iOS&apos;s share in a market, the further Android sits below iOS.
 
                     </p>
 
@@ -953,6 +953,12 @@ export function SubscriptionBulkPricingModal({
                                     {calculated.multiplierSource === 'custom' && 'Custom multiplier'}
                                     {calculated.multiplierSource === 'direct' && 'Direct conversion (1:1)'}
                                   </p>
+                                  {calculated.androidPlatformFactor !== undefined && (
+                                    <p className="text-xs text-muted-foreground">
+                                      Android factor: {calculated.androidPlatformFactor.toFixed(2)}× (iOS share{' '}
+                                      {Math.round((calculated.iosShare ?? 0) * 100)}%)
+                                    </p>
+                                  )}
                                   <p className="text-xs text-muted-foreground">
                                     Relative to US: {calculated.multiplier.toFixed(2)}×
                                   </p>

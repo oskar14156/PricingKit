@@ -246,3 +246,71 @@ base customer price
 This is a no-first-party-data prior, not a mathematical proof of the revenue
 optimum. Once enough traffic exists, country/platform revenue-per-install and
 LTV experiments should replace the prior.
+
+## V5 Android platform-selection model
+
+V5 replaces Google Play's hand-tuned per-region discounts (`apple × 0.82`,
+`ppp^0.72`, ...) with one model derived from each market's iOS share.
+
+### Why iOS priors sit above PPP (e.g. Afghanistan)
+
+The iOS priors deliberately price above raw PPP where iPhones are a niche.
+In Afghanistan iOS is ~12% of mobile usage, so iPhone owners (and App Store
+payers, who additionally need a working foreign card or gift card) are a
+small, affluent slice of the population. Raw PPP (~0.20x: World Bank 2024
+factor 13.2 AFN per international $ vs ~65 AFN/USD) describes the average
+consumer, not that slice. The 0.45x iOS prior is ~2.2x PPP, in line with
+India (0.45x vs 0.22x PPP, ~6% iOS share). Note Google Play does not sell
+paid content in Afghanistan, so there is no Android price to set there.
+
+### Why Android needs its own adjustment
+
+That wealth premium is iOS-specific. Where Android is the mass platform,
+Android payers are close to the average smartphone owner. The premium does
+not vanish entirely: Android payers still need a smartphone, a working Play
+payment method and willingness to pay, and with heavy-tailed WTP the
+revenue-maximizing price sits above the median payer. So Android should be
+below iOS, but not at raw PPP.
+
+### Model
+
+Smartphone users are sorted by a latent affluence score ~ N(0, 1), and iOS
+users are the top `s` share (StatCounter iOS mobile share, 12-month mean).
+The difference between the mean affluence of iOS and Android users is
+
+```text
+gap(s) = phi(z) / (s * (1 - s)),   z = PhiInverse(1 - s)
+androidFactor = clamp(exp(-0.6 * (gap(s) - gap(s_US))), 0.70, 1.0)
+googleMultiplier = iosMultiplier * androidFactor
+```
+
+`gap(s)` is flat for 30-60% iOS share (both platforms are mass market, as in
+the US where RevenueCat sees identical store pricing) and grows quickly once
+iOS becomes a niche. `K = 0.6` puts India (~6% iOS) at ~0.74, matching the
+~0.70-0.75 Play/App Store price ratio RevenueCat reports for IN/SEA. The model
+reproduces the old hand-tuned India and Brazil values, then goes further where
+iOS is especially niche.
+
+| Market | iOS share | Android factor | Old Google | V5 Google |
+|---|---:|---:|---:|---:|
+| India | 6% | 0.74 | 0.34 | 0.33 |
+| Kenya | 6% | 0.74 | 0.45 | 0.37 |
+| Nigeria | 15% | 0.88 | 0.34 | 0.35 |
+| Brazil | 20% | 0.92 | 0.52 | 0.51 |
+| UAE | 20% | 0.92 | 0.91 | 0.86 |
+| Mexico | 29% | 0.97 | 0.60 | 0.62 |
+| Poland | 32% | 0.98 | 0.68 | 0.74 |
+| Vietnam | 41% | 1.00 | 0.39 | 0.45 |
+| Germany | 38% | 0.99 | 0.96 | 0.95 |
+
+Guardrails:
+
+- Android is never priced above iOS in the same market (factor <= 1).
+- Android is never more than 30% below iOS (factor >= 0.70), to limit
+  cross-platform arbitrage when entitlements are shared across stores.
+- Markets with iOS share at or above the US level get factor 1, which also
+  neutralizes noisy StatCounter values for tiny territories.
+
+The iOS share snapshot lives in `src/lib/conversion-indexes/platform-share.ts`
+and should be refreshed roughly yearly. As with every Smart prior, Play
+Console price experiments on RPU/LTV should replace it for large markets.

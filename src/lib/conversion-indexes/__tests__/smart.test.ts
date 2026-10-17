@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { getSmartPricingMultiplier } from '../smart';
+import {
+  getAndroidPlatformFactor,
+  getSmartPricingBreakdown,
+  getSmartPricingMultiplier,
+  MIN_ANDROID_PLATFORM_FACTOR,
+} from '../smart';
 import { calculateRegionalPrice } from '../../google-play/currency';
 
 describe('getSmartPricingMultiplier', () => {
@@ -51,7 +56,7 @@ describe('getSmartPricingMultiplier', () => {
     const ios = getSmartPricingMultiplier('IN', 0.22, 'apple');
     const android = getSmartPricingMultiplier('IN', 0.22, 'google');
     expect(android).toBeLessThan(ios);
-    expect(android).toBeCloseTo(0.34, 2);
+    expect(android).toBeCloseTo(0.33, 2);
   });
 
   it('lands Latin America near large-app benchmark ranges', () => {
@@ -74,6 +79,68 @@ describe('getSmartPricingMultiplier', () => {
     expect(getSmartPricingMultiplier('CZ', 0.63, 'apple')).toBeCloseTo(0.80, 2);
     expect(getSmartPricingMultiplier('CL', 0.52, 'apple')).toBeCloseTo(0.75, 2);
     expect(getSmartPricingMultiplier('PA', 0.45, 'apple')).toBeCloseTo(0.75, 2);
+  });
+
+  describe('Android platform factor', () => {
+    it('keeps the US and iOS-mainstream markets at platform parity', () => {
+      expect(getAndroidPlatformFactor('US')).toBe(1);
+      expect(getAndroidPlatformFactor('JP')).toBe(1);
+      expect(getAndroidPlatformFactor('GB')).toBe(1);
+      expect(getSmartPricingMultiplier('AT', 0.84, 'google')).toBe(
+        getSmartPricingMultiplier('AT', 0.84, 'apple')
+      );
+    });
+
+    it('discounts Android more where iOS is a niche', () => {
+      const india = getAndroidPlatformFactor('IN'); // ~6% iOS
+      const brazil = getAndroidPlatformFactor('BR'); // ~20% iOS
+      const germany = getAndroidPlatformFactor('DE'); // ~38% iOS
+      expect(india).toBeLessThan(brazil);
+      expect(brazil).toBeLessThan(germany);
+      expect(india).toBeCloseTo(0.735, 2);
+      expect(brazil).toBeCloseTo(0.92, 2);
+      expect(germany).toBeGreaterThan(0.99);
+    });
+
+    it('captures the expat Android base in the UAE', () => {
+      expect(getAndroidPlatformFactor('AE')).toBeLessThan(0.93);
+    });
+
+    it('never goes below the cross-platform arbitrage floor', () => {
+      for (const code of ['NE', 'YE', 'TD', 'XX']) {
+        expect(getAndroidPlatformFactor(code)).toBeGreaterThanOrEqual(
+          MIN_ANDROID_PLATFORM_FACTOR
+        );
+      }
+      expect(getAndroidPlatformFactor('NE')).toBe(MIN_ANDROID_PLATFORM_FACTOR);
+    });
+
+    it('builds Google prices from the iOS prior times the platform factor', () => {
+      const breakdown = getSmartPricingBreakdown('KE', 0.34, 'google');
+      expect(breakdown.androidPlatformFactor).toBeDefined();
+      expect(breakdown.multiplier).toBeCloseTo(
+        breakdown.appleMultiplier * (breakdown.androidPlatformFactor ?? 1),
+        3
+      );
+      expect(breakdown.multiplier).toBeLessThanOrEqual(breakdown.appleMultiplier);
+    });
+
+    it('exposes the Android factor on Google Smart price calculations', () => {
+      const google = calculateRegionalPrice(4.99, 'KE', 'smart', 'none');
+      expect(google.androidPlatformFactor).toBe(getAndroidPlatformFactor('KE'));
+      expect(google.iosShare).toBeCloseTo(0.059, 3);
+
+      const apple = calculateRegionalPrice(
+        4.99, 'KE', 'smart', 'none', undefined, undefined, undefined,
+        undefined, 'USD', 'US', () => []
+      );
+      expect(apple.androidPlatformFactor).toBeUndefined();
+    });
+
+    it('still prices Android payers above raw PPP in low-income markets', () => {
+      expect(getSmartPricingMultiplier('IN', 0.22, 'google')).toBeGreaterThan(0.22);
+      expect(getSmartPricingMultiplier('NG', 0.13, 'google')).toBeGreaterThan(0.13);
+    });
   });
 
   it('rejects implausible live-PPP premiums when static PPP says lower-income', () => {

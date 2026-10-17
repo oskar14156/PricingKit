@@ -197,18 +197,20 @@ export interface BulkUpdateProgress {
   }>;
 }
 
-// Complete list of Google Play supported regions with country names and currencies
+// Complete list of Google Play supported regions with country names and currencies.
+// Currencies match Play regions version 2026/01 (checked 2026-10-17 via
+// monetization.convertRegionPrices).
 export const GOOGLE_PLAY_REGIONS = [
   { code: 'AE', name: 'United Arab Emirates', currency: 'AED' },
   { code: 'AG', name: 'Antigua and Barbuda', currency: 'USD' },
   { code: 'AL', name: 'Albania', currency: 'USD' },
   { code: 'AM', name: 'Armenia', currency: 'USD' },
   { code: 'AO', name: 'Angola', currency: 'USD' },
-  { code: 'AR', name: 'Argentina', currency: 'USD' },
+  { code: 'AR', name: 'Argentina', currency: 'ARS' },
   { code: 'AT', name: 'Austria', currency: 'EUR' },
   { code: 'AU', name: 'Australia', currency: 'AUD' },
   { code: 'AW', name: 'Aruba', currency: 'USD' },
-  { code: 'AZ', name: 'Azerbaijan', currency: 'USD' },
+  { code: 'AZ', name: 'Azerbaijan', currency: 'AZN' },
   { code: 'BA', name: 'Bosnia and Herzegovina', currency: 'USD' },
   { code: 'BD', name: 'Bangladesh', currency: 'BDT' },
   { code: 'BE', name: 'Belgium', currency: 'EUR' },
@@ -247,6 +249,7 @@ export const GOOGLE_PLAY_REGIONS = [
   { code: 'EG', name: 'Egypt', currency: 'EGP' },
   { code: 'ER', name: 'Eritrea', currency: 'USD' },
   { code: 'ES', name: 'Spain', currency: 'EUR' },
+  { code: 'ET', name: 'Ethiopia', currency: 'ETB' },
   { code: 'FI', name: 'Finland', currency: 'EUR' },
   { code: 'FJ', name: 'Fiji', currency: 'USD' },
   { code: 'FM', name: 'Micronesia', currency: 'USD' },
@@ -361,7 +364,7 @@ export const GOOGLE_PLAY_REGIONS = [
   { code: 'UG', name: 'Uganda', currency: 'USD' },
   { code: 'US', name: 'United States', currency: 'USD' },
   { code: 'UY', name: 'Uruguay', currency: 'USD' },
-  { code: 'UZ', name: 'Uzbekistan', currency: 'USD' },
+  { code: 'UZ', name: 'Uzbekistan', currency: 'UZS' },
   { code: 'VA', name: 'Vatican City', currency: 'EUR' },
   { code: 'VE', name: 'Venezuela', currency: 'USD' },
   { code: 'VG', name: 'British Virgin Islands', currency: 'USD' },

@@ -8,7 +8,9 @@ import type {
   RegionsVersion,
 } from './types';
 import { GOOGLE_PLAY_REGIONS, moneyToNumber } from './types';
-import { calculateBulkPrices } from './currency';
+import { calculateBulkPrices, calculateRegionalPrice } from './currency';
+import { getExchangeRates } from '../exchange-rates/client';
+import { FALLBACK_EXCHANGE_RATES } from '../conversion-indexes/exchange-rates';
 
 interface GoogleApiSubscription extends Subscription {
   regionsVersion?: RegionsVersion;
@@ -26,11 +28,175 @@ interface SubscriptionUpdateRequestBody {
 }
 
 /**
- * Get the latest available regions version for Google Play pricing.
- * Required for subscription price updates. Format: YYYY/MM.
+ * Latest Play regions version known at build time (Format: YYYY/MM). Google
+ * adds new versions when it changes billable regions or currencies; 2026/01
+ * moved AR, AZ and UZ to local currency (ARS, AZN, UZS) and added ET.
  */
-export function getLatestRegionsVersion(): string {
-  return '2025/03';
+export const KNOWN_LATEST_REGIONS_VERSION = '2026/01';
+
+const REGIONS_VERSION_TTL_MS = 24 * 60 * 60 * 1000;
+let cachedRegionsVersion: { version: string; fetchedAt: number } | null = null;
+
+/**
+ * Ask Google for the current regions version. `convertRegionPrices` is
+ * read-only and returns the version its conversions are based on, so new
+ * Google versions are picked up without a code change.
+ */
+export async function getLatestRegionsVersion(
+  credentials: ServiceAccountCredentials,
+  packageName: string
+): Promise<string> {
+  if (
+    cachedRegionsVersion &&
+    Date.now() - cachedRegionsVersion.fetchedAt < REGIONS_VERSION_TTL_MS
+  ) {
+    return cachedRegionsVersion.version;
+  }
+  try {
+    const response = await googlePlayFetch<{ regionVersion?: { version?: string } }>(
+      credentials,
+      `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/pricing:convertRegionPrices`,
+      { method: 'POST', body: { price: { currencyCode: 'USD', units: '1' } } }
+    );
+    const version = response.regionVersion?.version;
+    if (version) {
+      cachedRegionsVersion = { version, fetchedAt: Date.now() };
+      return version;
+    }
+  } catch (error) {
+    console.warn('[subscriptions] could not fetch latest regions version:', error);
+  }
+  return KNOWN_LATEST_REGIONS_VERSION;
+}
+
+// Older Play regions version. Products created under it can still list regions
+// that newer versions no longer bill. One-time products already default to it.
+const LEGACY_REGIONS_VERSION = '2022/02';
+
+function isRegionsVersionMismatch(error: unknown): boolean {
+  const err = error as { code?: number; message?: string };
+  return (
+    err?.code === 400 &&
+    typeof err.message === 'string' &&
+    /regions version/i.test(err.message)
+  );
+}
+
+const CURRENCY_MISMATCH =
+  /Invalid currency for region code ([A-Z]{2}) at the specified regions version [\d/]+\. Expected ([A-Z]{3}) but got ([A-Z]{3})/;
+
+/**
+ * Google can change a region's billing currency between regions versions.
+ * Existing base plans keep the old currency in GET responses, and sending it
+ * back is rejected at the newer version. Convert just that region's price to the currency Google expects,
+ * at the current exchange rate, rounded to a .99-style price point.
+ */
+async function convertRejectedCurrency(
+  body: SubscriptionUpdateRequestBody,
+  regionCode: string,
+  expectedCurrency: string,
+  actualCurrency: string
+): Promise<boolean> {
+  let rates: Record<string, number> = FALLBACK_EXCHANGE_RATES;
+  try {
+    rates = { ...FALLBACK_EXCHANGE_RATES, ...(await getExchangeRates()).rates };
+  } catch {
+    // Static snapshot is good enough to produce a valid price point.
+  }
+  if (!rates[expectedCurrency] || !rates[actualCurrency]) return false;
+
+  let converted = false;
+  for (const basePlan of body.basePlans ?? []) {
+    for (const config of basePlan.regionalConfigs ?? []) {
+      if (
+        config.regionCode !== regionCode ||
+        config.price?.currencyCode !== actualCurrency
+      ) {
+        continue;
+      }
+      const result = calculateRegionalPrice(
+        moneyToNumber(config.price),
+        regionCode,
+        'direct',
+        'nearest-99',
+        undefined,
+        undefined,
+        { [regionCode]: expectedCurrency },
+        { base: 'USD', rates, fetchedAt: new Date().toISOString() },
+        actualCurrency,
+        regionCode
+      );
+      console.warn(
+        `[subscriptions] ${regionCode} ${basePlan.basePlanId}: Google requires ${expectedCurrency}; ` +
+          `converted ${moneyToNumber(config.price)} ${actualCurrency} -> ${result.rawPrice} ${expectedCurrency}`
+      );
+      config.price = result.price;
+      converted = true;
+    }
+  }
+  return converted;
+}
+
+/**
+ * PATCH a subscription's base plans.
+ *
+ * The subscriptions GET response does not include the regions version the
+ * prices were authored under, so try the latest version first and fall back
+ * to the legacy version when Google rejects regions for that version. Region
+ * currencies Google no longer accepts at all are converted and retried. A
+ * rejected PATCH writes nothing.
+ */
+async function patchSubscriptionBasePlans(
+  credentials: ServiceAccountCredentials,
+  packageName: string,
+  productId: string,
+  knownVersion: string | undefined,
+  body: SubscriptionUpdateRequestBody
+): Promise<GoogleApiSubscription> {
+  const versions = knownVersion
+    ? [knownVersion]
+    : [await getLatestRegionsVersion(credentials, packageName), LEGACY_REGIONS_VERSION];
+  const MAX_CURRENCY_FIXES = 10;
+  let currencyFixes = 0;
+  let versionIndex = 0;
+
+  for (;;) {
+    const regionsVersion = versions[versionIndex];
+    try {
+      return await googlePlayFetch<GoogleApiSubscription>(
+        credentials,
+        `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions/${encodeURIComponent(productId)}`,
+        {
+          method: 'PATCH',
+          query: {
+            'regionsVersion.version': regionsVersion,
+            updateMask: 'basePlans',
+          },
+          body,
+        }
+      );
+    } catch (error) {
+      if (!isRegionsVersionMismatch(error)) throw error;
+      const message = (error as { message?: string }).message ?? '';
+
+      const currency = CURRENCY_MISMATCH.exec(message);
+      if (
+        currency &&
+        currencyFixes < MAX_CURRENCY_FIXES &&
+        (await convertRejectedCurrency(body, currency[1], currency[2], currency[3]))
+      ) {
+        currencyFixes += 1;
+        continue;
+      }
+
+      if (versionIndex + 1 >= versions.length) throw error;
+      console.warn(
+        `[subscriptions] regions version ${regionsVersion} rejected, trying next:`,
+        message
+      );
+      versionIndex += 1;
+    }
+  }
 }
 
 export async function listSubscriptions(
@@ -179,7 +345,6 @@ export async function updateBasePlanPrices(
     return bp;
   });
 
-  const regionsVersionString = subscription.regionsVersion?.version || getLatestRegionsVersion();
 
   const requestBody: SubscriptionUpdateRequestBody = {
     packageName,
@@ -187,17 +352,12 @@ export async function updateBasePlanPrices(
     basePlans: updatedBasePlans,
   };
 
-  const response = await googlePlayFetch<GoogleApiSubscription>(
+  const response = await patchSubscriptionBasePlans(
     credentials,
-    `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions/${encodeURIComponent(productId)}`,
-    {
-      method: 'PATCH',
-      query: {
-        'regionsVersion.version': regionsVersionString,
-        updateMask: 'basePlans',
-      },
-      body: requestBody,
-    }
+    packageName,
+    productId,
+    subscription.regionsVersion?.version,
+    requestBody
   );
 
   return response.basePlans?.find(bp => bp.basePlanId === basePlanId) || basePlan;
@@ -272,7 +432,6 @@ export async function deleteBasePlanRegionPrice(
     return bp;
   });
 
-  const regionsVersionString = subscription.regionsVersion?.version || getLatestRegionsVersion();
 
   const deleteRequestBody: SubscriptionUpdateRequestBody = {
     packageName,
@@ -280,17 +439,12 @@ export async function deleteBasePlanRegionPrice(
     basePlans: updatedBasePlans,
   };
 
-  const response = await googlePlayFetch<GoogleApiSubscription>(
+  const response = await patchSubscriptionBasePlans(
     credentials,
-    `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/subscriptions/${encodeURIComponent(productId)}`,
-    {
-      method: 'PATCH',
-      query: {
-        'regionsVersion.version': regionsVersionString,
-        updateMask: 'basePlans',
-      },
-      body: deleteRequestBody,
-    }
+    packageName,
+    productId,
+    subscription.regionsVersion?.version,
+    deleteRequestBody
   );
 
   return response.basePlans?.find(bp => bp.basePlanId === basePlanId) || basePlan;

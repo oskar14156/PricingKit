@@ -131,7 +131,9 @@ export function BulkPricingModal({
     '_appleProduct' in product &&
     (product as ProductWithApple)._appleProduct !== undefined;
   const platform: 'apple' | 'google' = isAppleProduct ? 'apple' : 'google';
-  const { data: appPrice } = useAppleAppPrice();
+  // Google products must not hit the Apple endpoint: without an Apple session
+  // it returns 401, which the global handler shows as "Session Expired".
+  const { data: appPrice } = useAppleAppPrice({ enabled: platform === 'apple' });
 
   // Initial base region: app-level (Apple) → per-product → 'USA' / 'US'.
   const initialBaseRegion = useMemo(() => {
